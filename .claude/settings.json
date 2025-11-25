@@ -1,0 +1,18 @@
+{
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Task",
+      "NotebookEdit"
+    ],
+    "deny": []
+  }
+}

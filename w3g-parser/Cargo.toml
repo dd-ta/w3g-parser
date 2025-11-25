@@ -1,0 +1,38 @@
+[package]
+name = "w3g-parser"
+version = "0.1.0"
+edition = "2021"
+description = "A comprehensive Warcraft 3 replay (.w3g) parser"
+license = "MIT"
+repository = "https://github.com/example/w3g-parser"
+keywords = ["warcraft", "replay", "parser", "w3g", "gaming"]
+categories = ["parser-implementations", "game-development"]
+
+[dependencies]
+# Zlib decompression for compressed replay data
+flate2 = "1.0"
+
+# Error handling with derive macros
+thiserror = "1.0"
+
+# CLI framework with derive macros
+clap = { version = "4.4", features = ["derive"] }
+
+# JSON serialization for output
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+# No additional dev dependencies for Phase 1
+
+[lib]
+name = "w3g_parser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "w3g-parser"
+path = "src/bin/w3g-parser.rs"
+
+[[bin]]
+name = "analyze"
+path = "src/bin/analyze.rs"

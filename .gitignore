@@ -1,0 +1,12 @@
+# Rust build artifacts
+w3g-parser/target/
+
+# Generated analysis/output files
+analysis/*.bin
+w3g-parser/decompressed.bin
+
+# Replay files (keep test fixtures for CI)
+replays/
+
+# OS files
+.DS_Store

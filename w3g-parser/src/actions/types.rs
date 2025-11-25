@@ -106,6 +106,116 @@ pub enum ActionType {
         unit_code: [u8; 4],
     },
 
+    /// Unit ability without target (0x10).
+    UnitAbilityNoTarget {
+        /// Flags byte.
+        flags: u8,
+        /// The ability's FourCC code.
+        ability_code: [u8; 4],
+    },
+
+    /// Unit ability with ground target (0x11).
+    UnitAbilityGroundTarget {
+        /// Flags byte.
+        flags: u8,
+        /// The ability's FourCC code.
+        ability_code: [u8; 4],
+        /// Target X coordinate.
+        x: f32,
+        /// Target Y coordinate.
+        y: f32,
+    },
+
+    /// Unit ability with unit target (0x12).
+    UnitAbilityUnitTarget {
+        /// Flags byte.
+        flags: u8,
+        /// The ability's FourCC code.
+        ability_code: [u8; 4],
+        /// Target unit ID.
+        target_unit: u32,
+        /// Target X coordinate.
+        x: f32,
+        /// Target Y coordinate.
+        y: f32,
+    },
+
+    /// Give or drop item (0x13).
+    GiveDropItem {
+        /// Flags byte.
+        flags: u8,
+        /// Item FourCC code.
+        item_code: [u8; 4],
+        /// Target unit ID.
+        target_unit: u32,
+        /// Target X coordinate.
+        x: f32,
+        /// Target Y coordinate.
+        y: f32,
+    },
+
+    /// Unit ability with two position targets (0x14).
+    UnitAbilityTwoTargets {
+        /// Flags byte.
+        flags: u8,
+        /// The ability's FourCC code.
+        ability_code: [u8; 4],
+        /// First target X coordinate.
+        x1: f32,
+        /// First target Y coordinate.
+        y1: f32,
+        /// Second target X coordinate.
+        x2: f32,
+        /// Second target Y coordinate.
+        y2: f32,
+    },
+
+    /// Select subgroup (0x19).
+    SelectSubgroup {
+        /// Item/subgroup index.
+        item: u8,
+        /// Object ID 1.
+        object_id1: u32,
+        /// Object ID 2.
+        object_id2: u32,
+    },
+
+    /// Remove unit from queue (0x1E).
+    RemoveFromQueue {
+        /// Slot position in queue.
+        slot: u8,
+        /// Unit type ID.
+        unit_id: u32,
+    },
+
+    /// Change ally options (0x50).
+    ChangeAllyOptions {
+        /// Slot number.
+        slot: u8,
+        /// Flags for ally settings.
+        flags: u32,
+    },
+
+    /// Transfer resources (0x51).
+    TransferResources {
+        /// Target slot.
+        slot: u8,
+        /// Gold amount.
+        gold: u32,
+        /// Lumber amount.
+        lumber: u32,
+    },
+
+    /// Minimap ping (0x68).
+    MinimapPing {
+        /// X coordinate.
+        x: f32,
+        /// Y coordinate.
+        y: f32,
+        /// Unknown data.
+        unknown: u32,
+    },
+
     /// Unknown action type - preserved for forward compatibility.
     Unknown {
         /// Raw action type byte.
@@ -132,6 +242,16 @@ impl ActionType {
             ActionType::ItemAction { .. } => "ItemAction",
             ActionType::BasicCommand { .. } => "BasicCommand",
             ActionType::BuildTrain { .. } => "BuildTrain",
+            ActionType::UnitAbilityNoTarget { .. } => "UnitAbilityNoTarget",
+            ActionType::UnitAbilityGroundTarget { .. } => "UnitAbilityGroundTarget",
+            ActionType::UnitAbilityUnitTarget { .. } => "UnitAbilityUnitTarget",
+            ActionType::GiveDropItem { .. } => "GiveDropItem",
+            ActionType::UnitAbilityTwoTargets { .. } => "UnitAbilityTwoTargets",
+            ActionType::SelectSubgroup { .. } => "SelectSubgroup",
+            ActionType::RemoveFromQueue { .. } => "RemoveFromQueue",
+            ActionType::ChangeAllyOptions { .. } => "ChangeAllyOptions",
+            ActionType::TransferResources { .. } => "TransferResources",
+            ActionType::MinimapPing { .. } => "MinimapPing",
             ActionType::Unknown { .. } => "Unknown",
         }
     }
@@ -149,6 +269,16 @@ impl ActionType {
             ActionType::ItemAction { .. } => 0x1B,
             ActionType::BasicCommand { .. } => 0x1C,
             ActionType::BuildTrain { .. } => 0x1D,
+            ActionType::UnitAbilityNoTarget { .. } => 0x10,
+            ActionType::UnitAbilityGroundTarget { .. } => 0x11,
+            ActionType::UnitAbilityUnitTarget { .. } => 0x12,
+            ActionType::GiveDropItem { .. } => 0x13,
+            ActionType::UnitAbilityTwoTargets { .. } => 0x14,
+            ActionType::SelectSubgroup { .. } => 0x19,
+            ActionType::RemoveFromQueue { .. } => 0x1E,
+            ActionType::ChangeAllyOptions { .. } => 0x50,
+            ActionType::TransferResources { .. } => 0x51,
+            ActionType::MinimapPing { .. } => 0x68,
             ActionType::Unknown { type_id, .. } => *type_id,
         }
     }
@@ -211,6 +341,96 @@ impl fmt::Display for ActionType {
                     .rev()
                     .collect::<String>();
                 write!(f, "BuildTrain: {code_str}")
+            }
+            ActionType::UnitAbilityNoTarget { ability_code, .. } => {
+                let code_str = std::str::from_utf8(ability_code)
+                    .unwrap_or("????")
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                write!(f, "UnitAbilityNoTarget: {code_str}")
+            }
+            ActionType::UnitAbilityGroundTarget {
+                ability_code, x, y, ..
+            } => {
+                let code_str = std::str::from_utf8(ability_code)
+                    .unwrap_or("????")
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                write!(f, "UnitAbilityGroundTarget: {code_str} at ({x:.1}, {y:.1})")
+            }
+            ActionType::UnitAbilityUnitTarget {
+                ability_code,
+                target_unit,
+                ..
+            } => {
+                let code_str = std::str::from_utf8(ability_code)
+                    .unwrap_or("????")
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                write!(
+                    f,
+                    "UnitAbilityUnitTarget: {code_str} -> 0x{target_unit:08X}"
+                )
+            }
+            ActionType::GiveDropItem {
+                item_code,
+                target_unit,
+                ..
+            } => {
+                let code_str = std::str::from_utf8(item_code)
+                    .unwrap_or("????")
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                write!(f, "GiveDropItem: {code_str} -> 0x{target_unit:08X}")
+            }
+            ActionType::UnitAbilityTwoTargets {
+                ability_code,
+                x1,
+                y1,
+                x2,
+                y2,
+                ..
+            } => {
+                let code_str = std::str::from_utf8(ability_code)
+                    .unwrap_or("????")
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                write!(
+                    f,
+                    "UnitAbilityTwoTargets: {code_str} ({x1:.1}, {y1:.1}) -> ({x2:.1}, {y2:.1})"
+                )
+            }
+            ActionType::SelectSubgroup {
+                item,
+                object_id1,
+                object_id2,
+            } => {
+                write!(
+                    f,
+                    "SelectSubgroup: item {} (0x{:08X}, 0x{:08X})",
+                    item, object_id1, object_id2
+                )
+            }
+            ActionType::RemoveFromQueue { slot, unit_id } => {
+                write!(f, "RemoveFromQueue: slot {} unit 0x{:08X}", slot, unit_id)
+            }
+            ActionType::ChangeAllyOptions { slot, flags } => {
+                write!(f, "ChangeAllyOptions: slot {} flags 0x{:08X}", slot, flags)
+            }
+            ActionType::TransferResources { slot, gold, lumber } => {
+                write!(
+                    f,
+                    "TransferResources: slot {} gold {} lumber {}",
+                    slot, gold, lumber
+                )
+            }
+            ActionType::MinimapPing { x, y, .. } => {
+                write!(f, "MinimapPing: ({x:.1}, {y:.1})")
             }
             ActionType::Unknown {
                 type_id,

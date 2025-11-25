@@ -1,10 +1,68 @@
-//! Movement action parsing (0x00 0x0D).
+//! Movement action parsing (0x00 with various subcommands).
 //!
 //! Movement actions represent right-click commands (move/attack)
 //! with target coordinates and optional target unit.
 
 use crate::error::{ParserError, Result};
 use std::fmt;
+
+/// Type of movement command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovementType {
+    /// Regular move (right-click ground) - 0x0D.
+    Move,
+    /// Attack-move (A-click) - 0x0E.
+    AttackMove,
+    /// Patrol command - 0x0F.
+    Patrol,
+    /// Hold position - 0x10.
+    HoldPosition,
+    /// Smart right-click (context-aware) - 0x12.
+    SmartClick,
+    /// Unknown movement subcommand.
+    Unknown(u8),
+}
+
+impl MovementType {
+    /// Creates a MovementType from a subcommand byte.
+    #[must_use]
+    pub fn from_subcommand(sub: u8) -> Self {
+        match sub {
+            0x0D => MovementType::Move,
+            0x0E => MovementType::AttackMove,
+            0x0F => MovementType::Patrol,
+            0x10 => MovementType::HoldPosition,
+            0x12 => MovementType::SmartClick,
+            n => MovementType::Unknown(n),
+        }
+    }
+
+    /// Returns the subcommand byte for this movement type.
+    #[must_use]
+    pub fn as_subcommand(&self) -> u8 {
+        match self {
+            MovementType::Move => 0x0D,
+            MovementType::AttackMove => 0x0E,
+            MovementType::Patrol => 0x0F,
+            MovementType::HoldPosition => 0x10,
+            MovementType::SmartClick => 0x12,
+            MovementType::Unknown(n) => *n,
+        }
+    }
+}
+
+impl fmt::Display for MovementType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MovementType::Move => write!(f, "Move"),
+            MovementType::AttackMove => write!(f, "Attack-Move"),
+            MovementType::Patrol => write!(f, "Patrol"),
+            MovementType::HoldPosition => write!(f, "Hold Position"),
+            MovementType::SmartClick => write!(f, "Smart Click"),
+            MovementType::Unknown(n) => write!(f, "Unknown(0x{n:02X})"),
+        }
+    }
+}
 
 /// Map position in game coordinates.
 ///
@@ -63,12 +121,16 @@ impl fmt::Display for Position {
 /// # Format
 ///
 /// ```text
-/// 00 0D [flags: 2] [target: 8 bytes] [x: 4 float] [y: 4 float] [extra: 8]
+/// 00 [sub] [flags: 2] [target: 8 bytes] [x: 4 float] [y: 4 float] [extra: 8]
 /// ```
 ///
+/// Subcommands: 0x0D=Move, 0x0E=Attack-Move, 0x0F=Patrol, 0x10=Hold, 0x12=Smart
 /// Total size: 28 bytes.
 #[derive(Debug, Clone)]
 pub struct MovementAction {
+    /// Type of movement command (Move, Attack-Move, Patrol, etc.).
+    pub movement_type: MovementType,
+
     /// Command flags (meaning under investigation).
     pub flags: u16,
 
@@ -97,7 +159,7 @@ impl MovementAction {
     /// Fixed size of a movement action.
     pub const SIZE: usize = 28;
 
-    /// Parses a movement action from raw data.
+    /// Parses a movement action from raw data (default subcommand 0x0D).
     ///
     /// # Arguments
     ///
@@ -112,21 +174,37 @@ impl MovementAction {
     /// - `ParserError::InvalidHeader` if markers don't match
     /// - `ParserError::UnexpectedEof` if data is truncated
     pub fn parse(data: &[u8]) -> Result<(Self, usize)> {
+        Self::parse_with_subcommand(data, Self::SUBCOMMAND)
+    }
+
+    /// Parses a movement action with a specified subcommand.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - Raw action data starting at 0x00 marker
+    /// * `expected_subcommand` - Expected subcommand byte (0x0D, 0x0E, 0x0F, 0x10, 0x12)
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(MovementAction, bytes_consumed)`.
+    pub fn parse_with_subcommand(data: &[u8], expected_subcommand: u8) -> Result<(Self, usize)> {
         if data.len() < Self::SIZE {
             return Err(ParserError::unexpected_eof(Self::SIZE, data.len()));
         }
 
-        if data[0] != Self::MARKER || data[1] != Self::SUBCOMMAND {
+        if data[0] != Self::MARKER || data[1] != expected_subcommand {
             return Err(ParserError::InvalidHeader {
                 reason: format!(
                     "Invalid movement markers: expected 0x{:02X} 0x{:02X}, found 0x{:02X} 0x{:02X}",
                     Self::MARKER,
-                    Self::SUBCOMMAND,
+                    expected_subcommand,
                     data[0],
                     data[1]
                 ),
             });
         }
+
+        let movement_type = MovementType::from_subcommand(data[1]);
 
         // Flags (bytes 2-3)
         let flags = u16::from_le_bytes([data[2], data[3]]);
@@ -157,6 +235,7 @@ impl MovementAction {
 
         Ok((
             MovementAction {
+                movement_type,
                 flags,
                 target_unit,
                 x,
@@ -191,12 +270,13 @@ impl fmt::Display for MovementAction {
         if let Some(target) = self.target_unit {
             write!(
                 f,
-                "Movement to {} targeting unit 0x{:08X}",
+                "{} to {} targeting unit 0x{:08X}",
+                self.movement_type,
                 self.position(),
                 target
             )
         } else {
-            write!(f, "Movement to {}", self.position())
+            write!(f, "{} to {}", self.movement_type, self.position())
         }
     }
 }

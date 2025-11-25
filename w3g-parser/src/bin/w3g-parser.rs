@@ -550,20 +550,26 @@ fn collect_actions(
 
             // Categorize action (matching warcraft3.info categories)
             match &action.action_type {
-                ActionType::Movement(_) => ps.rightclick += 1,
+                ActionType::Movement(_) | ActionType::MinimapPing { .. } => ps.rightclick += 1,
                 ActionType::BasicCommand { .. } => ps.basic += 1,
                 ActionType::BuildTrain { .. } => ps.buildtrain += 1,
                 ActionType::Ability(_)
                 | ActionType::AbilityWithSelection(_)
-                | ActionType::InstantAbility(_) => ps.ability += 1,
-                ActionType::ItemAction { .. } => ps.item += 1,
-                ActionType::Selection(_) => ps.select += 1,
+                | ActionType::InstantAbility(_)
+                | ActionType::UnitAbilityNoTarget { .. }
+                | ActionType::UnitAbilityGroundTarget { .. }
+                | ActionType::UnitAbilityUnitTarget { .. }
+                | ActionType::UnitAbilityTwoTargets { .. }
+                | ActionType::RemoveFromQueue { .. }
+                | ActionType::TransferResources { .. } => ps.ability += 1,
+                ActionType::ItemAction { .. } | ActionType::GiveDropItem { .. } => ps.item += 1,
+                ActionType::Selection(_) | ActionType::SelectSubgroup { .. } => ps.select += 1,
                 ActionType::Hotkey(hk) => match hk.operation {
                     HotkeyOperation::Assign | HotkeyOperation::AddToGroup => ps.assigngroup += 1,
                     HotkeyOperation::Select => ps.selecthotkey += 1,
                     HotkeyOperation::Unknown(_) => ps.other += 1,
                 },
-                ActionType::EscapeKey => ps.esc += 1,
+                ActionType::EscapeKey | ActionType::ChangeAllyOptions { .. } => ps.esc += 1,
                 ActionType::Unknown { .. } => ps.other += 1,
             }
 

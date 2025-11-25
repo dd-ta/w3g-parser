@@ -57,7 +57,7 @@ mod types;
 
 pub use ability::{AbilityAction, AbilityCode, AbilityWithSelectionAction, InstantAbilityAction, Race};
 pub use hotkey::{HotkeyAction, HotkeyOperation};
-pub use movement::{MovementAction, Position};
+pub use movement::{MovementAction, MovementType, Position};
 pub use parser::{ActionContext, ActionIterator, ActionStatistics};
 pub use selection::{SelectionAction, SelectionMode};
 pub use types::{Action, ActionType};

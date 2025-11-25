@@ -36,6 +36,13 @@ impl ActionContext {
 /// This iterator parses action blocks from raw action data, yielding
 /// `Action` structs with player IDs, action types, and timestamps.
 ///
+/// # W3G Format Structure
+///
+/// The action data contains sequential player actions:
+/// - 1 byte: PlayerID (1-15)
+/// - 1 byte: ActionType
+/// - n bytes: Action data (varies by action type)
+///
 /// # Example
 ///
 /// ```ignore
@@ -145,9 +152,10 @@ impl<'a> ActionIterator<'a> {
         data: &[u8],
     ) -> Result<(ActionType, usize)> {
         match (action_type, subcommand) {
-            // Movement (0x00 0x0D)
-            (0x00, Some(0x0D)) => {
-                let (mov, consumed) = MovementAction::parse(data)?;
+            // Movement commands (0x00 with various subcommands)
+            // 0x0D = Move, 0x0E = Attack-move, 0x0F = Patrol, 0x10 = Hold, 0x12 = Smart-click
+            (0x00, Some(sub @ (0x0D | 0x0E | 0x0F | 0x10 | 0x12))) => {
+                let (mov, consumed) = MovementAction::parse_with_subcommand(data, sub)?;
                 Ok((ActionType::Movement(mov), consumed))
             }
 
@@ -223,6 +231,91 @@ impl<'a> ActionIterator<'a> {
                 Ok((ActionType::BuildTrain { unit_code }, consumed))
             }
 
+            // Select subgroup (0x19)
+            (0x19, _) => {
+                // SelectSubgroup: type(1) + item(1) + object_id1(4) + object_id2(4) + unknown(3) = 13 bytes
+                let consumed = 13.min(data.len());
+                if data.len() >= 10 {
+                    let item = data[1];
+                    let object_id1 = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
+                    let object_id2 = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
+                    Ok((
+                        ActionType::SelectSubgroup {
+                            item,
+                            object_id1,
+                            object_id2,
+                        },
+                        consumed,
+                    ))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Remove from queue (0x1E)
+            (0x1E, _) => {
+                // RemoveFromQueue: type(1) + slot(1) + unit_id(4) = 6 bytes
+                let consumed = 6.min(data.len());
+                if data.len() >= 6 {
+                    let slot = data[1];
+                    let unit_id = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
+                    Ok((ActionType::RemoveFromQueue { slot, unit_id }, consumed))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Change ally options (0x50)
+            (0x50, _) => {
+                // ChangeAllyOptions: type(1) + slot(1) + flags(4) = 6 bytes
+                let consumed = 6.min(data.len());
+                if data.len() >= 6 {
+                    let slot = data[1];
+                    let flags = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
+                    Ok((ActionType::ChangeAllyOptions { slot, flags }, consumed))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Transfer resources (0x51)
+            (0x51, _) => {
+                // TransferResources: type(1) + slot(1) + gold(4) + lumber(4) = 10 bytes
+                let consumed = 10.min(data.len());
+                if data.len() >= 10 {
+                    let slot = data[1];
+                    let gold = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
+                    let lumber = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
+                    Ok((
+                        ActionType::TransferResources { slot, gold, lumber },
+                        consumed,
+                    ))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Minimap ping (0x68)
+            (0x68, _) => {
+                // MinimapPing: type(1) + x(4) + y(4) + unknown(4) = 13 bytes
+                let consumed = 13.min(data.len());
+                if data.len() >= 13 {
+                    let x = f32::from_le_bytes([data[1], data[2], data[3], data[4]]);
+                    let y = f32::from_le_bytes([data[5], data[6], data[7], data[8]]);
+                    let unknown = u32::from_le_bytes([data[9], data[10], data[11], data[12]]);
+                    Ok((ActionType::MinimapPing { x, y, unknown }, consumed))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Note: Action types 0x10-0x14 are theoretically unit ability types
+            // according to W3G documentation, but in practice they seem to
+            // appear as data bytes within other actions in most replays.
+            // They are left to fall through to the Unknown handler to avoid
+            // desynchronization. The ActionType enum still has these variants
+            // defined for future use when we can properly validate them.
+
             // Unknown action types - try to find the next action boundary
             _ => Ok(Self::parse_unknown_action(action_type, subcommand, data)),
         }
@@ -285,8 +378,16 @@ impl Iterator for ActionIterator<'_> {
 }
 
 /// Returns whether the byte is a known action type marker.
+///
+/// Note: 0x10-0x14 are unit ability types but are NOT included here
+/// because they can also appear as data bytes within other actions,
+/// making boundary detection unreliable. They are still parsed when
+/// encountered, but we don't use them for finding action boundaries.
 fn is_known_action_type(byte: u8) -> bool {
-    matches!(byte, 0x00 | 0x0F | 0x16 | 0x17 | 0x18 | 0x1A | 0x1B | 0x1C | 0x1D)
+    matches!(
+        byte,
+        0x00 | 0x0F | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x50 | 0x51 | 0x68
+    )
 }
 
 /// Statistics about actions parsed from a replay.
@@ -360,6 +461,45 @@ impl ActionStatistics {
             ActionType::BuildTrain { unit_code } => {
                 self.ability_actions += 1;
                 self.unique_ability_codes.insert(*unit_code);
+            }
+            ActionType::UnitAbilityNoTarget { ability_code, .. } => {
+                self.ability_actions += 1;
+                self.unique_ability_codes.insert(*ability_code);
+            }
+            ActionType::UnitAbilityGroundTarget { ability_code, .. } => {
+                self.ability_actions += 1;
+                self.unique_ability_codes.insert(*ability_code);
+            }
+            ActionType::UnitAbilityUnitTarget { ability_code, .. } => {
+                self.ability_actions += 1;
+                self.unique_ability_codes.insert(*ability_code);
+            }
+            ActionType::GiveDropItem { item_code, .. } => {
+                self.ability_actions += 1;
+                self.unique_ability_codes.insert(*item_code);
+            }
+            ActionType::UnitAbilityTwoTargets { ability_code, .. } => {
+                self.ability_actions += 1;
+                self.unique_ability_codes.insert(*ability_code);
+            }
+            ActionType::SelectSubgroup { .. } => {
+                // SelectSubgroup is selection-like
+                self.selection_actions += 1;
+            }
+            ActionType::RemoveFromQueue { .. } => {
+                // Removing from queue is ability-like
+                self.ability_actions += 1;
+            }
+            ActionType::ChangeAllyOptions { .. } => {
+                // Ally options are ESC-like (meta actions)
+            }
+            ActionType::TransferResources { .. } => {
+                // Resource transfer is ability-like
+                self.ability_actions += 1;
+            }
+            ActionType::MinimapPing { .. } => {
+                // Pings are movement-like (map interaction)
+                self.movement_actions += 1;
             }
             ActionType::Unknown { .. } => self.unknown_actions += 1,
         }
@@ -539,6 +679,13 @@ mod tests {
     fn test_is_known_action_type() {
         assert!(is_known_action_type(0x00)); // Movement
         assert!(is_known_action_type(0x0F)); // InstantAbility
+        // Note: 0x10-0x14 are NOT in is_known_action_type because they
+        // can appear as data bytes, making boundary detection unreliable
+        assert!(!is_known_action_type(0x10)); // Not used for boundary detection
+        assert!(!is_known_action_type(0x11)); // Not used for boundary detection
+        assert!(!is_known_action_type(0x12)); // Not used for boundary detection
+        assert!(!is_known_action_type(0x13)); // Not used for boundary detection
+        assert!(!is_known_action_type(0x14)); // Not used for boundary detection
         assert!(is_known_action_type(0x16)); // Selection
         assert!(is_known_action_type(0x17)); // Hotkey
         assert!(is_known_action_type(0x18)); // ESC
@@ -546,7 +693,7 @@ mod tests {
         assert!(is_known_action_type(0x1B)); // Item
         assert!(is_known_action_type(0x1C)); // BasicCommand
         assert!(is_known_action_type(0x1D)); // BuildTrain
-        assert!(!is_known_action_type(0x10));
-        assert!(!is_known_action_type(0xFF));
+        assert!(!is_known_action_type(0x15)); // Unknown
+        assert!(!is_known_action_type(0xFF)); // Unknown
     }
 }

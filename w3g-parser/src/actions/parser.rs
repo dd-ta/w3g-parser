@@ -152,6 +152,104 @@ impl<'a> ActionIterator<'a> {
         data: &[u8],
     ) -> Result<(ActionType, usize)> {
         match (action_type, subcommand) {
+            // Pattern: 0x01 with various subcommands - Reforged markers
+            (0x01, Some(0x00)) if data.len() >= 3 && data.get(2) == Some(&0x67) => {
+                // Structure: 0x01 0x00 0x67 (3 bytes)
+                Ok((
+                    ActionType::BasicCommand {
+                        command_id: 0x01006700,
+                    },
+                    3,
+                ))
+            }
+            // 0x01 0x0D pattern (2 bytes) - Reforged marker
+            (0x01, Some(0x0D)) => {
+                Ok((
+                    ActionType::BasicCommand {
+                        command_id: 0x01000D00,
+                    },
+                    2,
+                ))
+            }
+            // 0x01 0x00 with selection (0x66 = 102 decimal, check for 0x16)
+            (0x01, Some(0x00)) if data.len() >= 3 => {
+                // Short form: 0x01 0x00 [byte] (3 bytes)
+                Ok((
+                    ActionType::BasicCommand {
+                        command_id: 0x01000000 | (data.get(2).copied().unwrap_or(0) as u32),
+                    },
+                    3,
+                ))
+            }
+
+            // Pattern 1: 0x0C (Selection Shortcut)
+            (0x0C, Some(0x00)) => {
+                // Check if data[2] == 0x16 for long form selection
+                if data.len() >= 3 && data.get(2) == Some(&0x16) {
+                    // Long form: 0x0C 0x00 0x16 [count] [mode] 0x00 [unit_ids...]
+                    // Parse as Selection starting at offset 2
+                    let (sel, consumed) = SelectionAction::parse(&data[2..])?;
+                    Ok((ActionType::Selection(sel), 2 + consumed))
+                } else {
+                    // Short form: 0x0C 0x00 (2 bytes) - parse as BasicCommand
+                    Ok((
+                        ActionType::BasicCommand {
+                            command_id: 0x0C000000, // Unique ID for short form
+                        },
+                        2,
+                    ))
+                }
+            }
+
+            // Pattern 3: 0x2C (Movement Wrapper) - 24 bytes
+            (0x2C, Some(0x00)) => {
+                // Structure: 0x2C 0x00 0x14 0x00 0x00 0x03 0x00 0x0D 0x00 [8 bytes target] [8 bytes coords]
+                // Check for expected header structure
+                if data.len() >= 24
+                    && data.get(2) == Some(&0x14)
+                    && data.get(3) == Some(&0x00)
+                    && data.get(4) == Some(&0x00)
+                    && data.get(5) == Some(&0x03)
+                    && data.get(6) == Some(&0x00)
+                    && data.get(7) == Some(&0x0D)
+                    && data.get(8) == Some(&0x00)
+                {
+                    // Extract embedded movement data starting at offset 7
+                    // The embedded movement is: 0x00 0x0D [2 flags] [8 target] [8 coords]
+                    // We need to construct a proper movement buffer for parsing
+                    let mut mov_buffer = Vec::with_capacity(28);
+                    mov_buffer.push(0x00); // Movement marker
+                    mov_buffer.push(0x0D); // Move subcommand
+                    mov_buffer.extend_from_slice(&[0x00, 0x00]); // Flags placeholder
+                    mov_buffer.extend_from_slice(&data[9..17]); // Target (8 bytes)
+                    mov_buffer.extend_from_slice(&data[17..24]); // Coords (7 bytes visible, pad to 8)
+                    // Pad remaining bytes for full movement structure
+                    while mov_buffer.len() < 28 {
+                        mov_buffer.push(0x00);
+                    }
+
+                    // Parse the movement from constructed buffer
+                    let (mov, _) = MovementAction::parse_with_subcommand(&mov_buffer, 0x0D)?;
+                    Ok((ActionType::Movement(mov), 24))
+                } else {
+                    // Doesn't match expected structure, fall through to unknown
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Empty/keepalive 0x00 action (no subcommand or single byte)
+            // This appears in Reforged replays as a sync/heartbeat marker
+            (0x00, None) | (0x00, Some(0x00)) if data.len() <= 2 => {
+                // Consume just the type byte (or type + zero byte)
+                let consumed = data.len().min(2);
+                Ok((
+                    ActionType::BasicCommand {
+                        command_id: 0x00000000, // Keepalive/sync
+                    },
+                    consumed,
+                ))
+            }
+
             // Movement commands (0x00 with various subcommands)
             // 0x0D = Move, 0x0E = Attack-move, 0x0F = Patrol, 0x10 = Hold, 0x12 = Smart-click
             (0x00, Some(sub @ (0x0D | 0x0E | 0x0F | 0x10 | 0x12))) => {
@@ -309,12 +407,245 @@ impl<'a> ActionIterator<'a> {
                 }
             }
 
+            // Battle.net sync (0x15) - Reforged only
+            // Structure: type(1) + marker(2) + separator(1) + base64_data(~16) + padding(~4) = 24 bytes
+            (0x15, _) => {
+                let consumed = 24.min(data.len());
+                if data.len() >= 24 {
+                    let marker = u16::from_le_bytes([data[1], data[2]]);
+                    // Skip separator at data[3], capture Base64-like data from 4 onwards
+                    let sync_data = data[4..24].to_vec();
+                    Ok((ActionType::BattleNetSync { marker, data: sync_data }, consumed))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Reforged Wrapped Ability (0x11) - Reforged only
+            // Structure: type(1) + flags(1) + marker(1) + counter(1) + inner_flag(1) + inner_action
+            // For direct ability inner: 0x1A 0x19 + fourcc(4) + unit_ids(8) = 14 bytes
+            // Total: 5 + 14 = 19 bytes
+            (0x11, Some(0x00)) => {
+                // Check for 0x18 marker at byte 2 (Reforged format)
+                if data.get(2) == Some(&0x18) {
+                    // Long form: 19 bytes with inner 0x1A 0x19 ability
+                    if data.len() >= 19
+                        && data.get(5) == Some(&0x1A)
+                        && data.get(6) == Some(&0x19)
+                    {
+                        let ability_code = [data[7], data[8], data[9], data[10]];
+                        let target_unit = if data.len() >= 15 {
+                            Some(u32::from_le_bytes([data[11], data[12], data[13], data[14]]))
+                        } else {
+                            None
+                        };
+                        let ab = AbilityAction::from_raw(ability_code, target_unit);
+                        return Ok((ActionType::Ability(ab), 19));
+                    }
+                    // Short form: 0x11 0x00 0x18 0x00 (4 bytes) - sync/marker
+                    if data.len() >= 4 && data.get(3) == Some(&0x00) {
+                        return Ok((
+                            ActionType::BasicCommand {
+                                command_id: 0x11001800, // Reforged sync marker
+                            },
+                            4,
+                        ));
+                    }
+                    // Medium form: just 0x11 0x00 0x18 (3 bytes)
+                    if data.len() >= 3 {
+                        return Ok((
+                            ActionType::BasicCommand {
+                                command_id: 0x11001800,
+                            },
+                            3,
+                        ));
+                    }
+                }
+                // Check for 0x7B (123) marker at byte 2 (Classic/BattleNet format)
+                // These are BattleNet sync packets with variable structure
+                if data.get(2) == Some(&0x7B) {
+                    // Variable length: find end by scanning for known patterns
+                    // Common sizes: 4, 8, 10, 14, 16, 18 bytes after type+flags
+                    // Structure: 0x11 0x00 0x7B [coordinate data or ability]
+                    let consumed = if data.len() >= 18 {
+                        // Check if this contains an ability (FourCC pattern at bytes 12-15)
+                        // FourCC typically has ASCII chars like 'A' (65), 'E' (69), 'U' (85)
+                        if data.len() >= 18
+                            && (data[12..16].iter().any(|&b| (65..=90).contains(&b)
+                                || (97..=122).contains(&b)))
+                        {
+                            18 // Long form with FourCC
+                        } else if data.len() >= 14 && data.get(11) == Some(&0x00) {
+                            14 // Medium form with coordinates
+                        } else if data.len() >= 10 {
+                            10
+                        } else if data.len() >= 8 {
+                            8
+                        } else {
+                            4.min(data.len())
+                        }
+                    } else if data.len() >= 8 {
+                        8
+                    } else {
+                        4.min(data.len())
+                    };
+                    let sync_data = data[3..consumed].to_vec();
+                    return Ok((
+                        ActionType::BattleNetSync {
+                            marker: 0x117B, // 0x11 + 0x7B marker
+                            data: sync_data,
+                        },
+                        consumed,
+                    ));
+                }
+                // Fall through to unknown if structure doesn't match
+                Ok(Self::parse_unknown_action(action_type, subcommand, data))
+            }
+
+            // Reforged Queue/Repeat Action (0x03) - Reforged only
+            // Structure: type(1) + flags(1) + marker(1) + counter(1) + terminator(1) = 5 bytes
+            // This appears to be a "repeat last action" or "queue" marker
+            (0x03, Some(0x00)) => {
+                // Check for 0x18 marker at byte 2 and 0x03 terminator at byte 4
+                if data.len() >= 5 && data.get(2) == Some(&0x18) && data.get(4) == Some(&0x03) {
+                    // Simple 5-byte action - treat as a repeat/queue command
+                    // We'll classify this as a BasicCommand for stats purposes
+                    let counter = data.get(3).copied().unwrap_or(0);
+                    return Ok((
+                        ActionType::BasicCommand {
+                            command_id: 0x03001803 | ((counter as u32) << 24),
+                        },
+                        5,
+                    ));
+                }
+                Ok(Self::parse_unknown_action(action_type, subcommand, data))
+            }
+
+            // 0x03 with 0x1A (26) subcommand - Classic wrapped ability
+            // Pattern: 0x03 0x1A 0x19 [fourcc 4 bytes] [target 4 bytes] = 12 bytes
+            (0x03, Some(0x1A)) => {
+                if data.len() >= 12 && data.get(2) == Some(&0x19) {
+                    let ability_code = [data[3], data[4], data[5], data[6]];
+                    let target_unit = if data.len() >= 11 {
+                        Some(u32::from_le_bytes([data[7], data[8], data[9], data[10]]))
+                    } else {
+                        None
+                    };
+                    let ab = AbilityAction::from_raw(ability_code, target_unit);
+                    return Ok((ActionType::Ability(ab), 12));
+                }
+                Ok(Self::parse_unknown_action(action_type, subcommand, data))
+            }
+
             // Note: Action types 0x10-0x14 are theoretically unit ability types
             // according to W3G documentation, but in practice they seem to
             // appear as data bytes within other actions in most replays.
             // They are left to fall through to the Unknown handler to avoid
             // desynchronization. The ActionType enum still has these variants
             // defined for future use when we can properly validate them.
+
+            // Reforged Wrapped Selection (0x26, 0x36, 0x46, 0x56, 0x2E, 0x3E, 0x4E, 0x5E)
+            // Pattern: [type] 0x00 0x16 [selection_data...]
+            // These are base Selection (0x16) with modifier flags in upper nibble
+            (0x26 | 0x36 | 0x46 | 0x56 | 0x2E | 0x3E | 0x4E | 0x5E, Some(0x00)) => {
+                if data.len() >= 3 && data.get(2) == Some(&0x16) {
+                    // Long form: Parse selection starting from embedded 0x16
+                    let (sel, consumed) = SelectionAction::parse(&data[2..])?;
+                    Ok((ActionType::Selection(sel), 2 + consumed))
+                } else if data.len() >= 2 {
+                    // Short form: 2-byte marker (type + 0x00)
+                    // Treat as sync/marker command
+                    Ok((
+                        ActionType::BasicCommand {
+                            command_id: (action_type as u32) << 8,
+                        },
+                        2,
+                    ))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Reforged short-form wrapped types (0x20-0x7F range with 0x00 subcommand)
+            // Many Reforged actions use [type, 0x00] as 2-byte sync/state markers
+            // Or [type, 0x00, 0x16, count] for wrapped selection variants
+            (0x20..=0x7F, Some(0x00)) => {
+                // Check for embedded selection (0x16 at offset 2)
+                // Note: 0x16 = 22 decimal
+                if data.len() >= 4 && data.get(2) == Some(&0x16) {
+                    let (sel, consumed) = SelectionAction::parse(&data[2..])?;
+                    Ok((ActionType::Selection(sel), 2 + consumed))
+                } else if data.len() >= 2 {
+                    // Short form: treat as sync marker
+                    Ok((
+                        ActionType::BasicCommand {
+                            command_id: (action_type as u32) << 8,
+                        },
+                        2,
+                    ))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // Reforged high-range types (0x80-0xFF with 0x00 or specific subcommands)
+            // 0xA0 (160) with subcommand 0x02 = Reforged sync/state marker
+            (0xA0, Some(0x02)) => {
+                Ok((
+                    ActionType::BasicCommand {
+                        command_id: 0xA0020000, // Reforged state sync
+                    },
+                    2,
+                ))
+            }
+            // Generic high-range handler
+            (0x80..=0xFF, Some(0x00)) => {
+                if data.len() >= 4 && data.get(2) == Some(&0x16) {
+                    let (sel, consumed) = SelectionAction::parse(&data[2..])?;
+                    Ok((ActionType::Selection(sel), 2 + consumed))
+                } else if data.len() >= 2 {
+                    Ok((
+                        ActionType::BasicCommand {
+                            command_id: (action_type as u32) << 8,
+                        },
+                        2,
+                    ))
+                } else {
+                    Ok(Self::parse_unknown_action(action_type, subcommand, data))
+                }
+            }
+
+            // 0x0E (Attack-move) with embedded ability (0x1A 0x19)
+            // Pattern: 0x0E 0x00 0x1A 0x19 [fourcc] [target]
+            (0x0E, Some(0x00)) if data.len() >= 3 && data.get(2) == Some(&0x1A) => {
+                if data.len() >= 14 && data.get(3) == Some(&0x19) {
+                    // Extract ability data
+                    let ability_code = [data[4], data[5], data[6], data[7]];
+                    let target_unit = if data.len() >= 12 {
+                        Some(u32::from_le_bytes([data[8], data[9], data[10], data[11]]))
+                    } else {
+                        None
+                    };
+                    let ab = AbilityAction::from_raw(ability_code, target_unit);
+                    return Ok((ActionType::Ability(ab), 14));
+                }
+                Ok(Self::parse_unknown_action(action_type, subcommand, data))
+            }
+
+            // 0x14 (20) - Short marker patterns
+            (0x14, Some(0x00)) => {
+                if data.len() >= 4 && data.get(2) == Some(&0x16) {
+                    let (sel, consumed) = SelectionAction::parse(&data[2..])?;
+                    Ok((ActionType::Selection(sel), 2 + consumed))
+                } else {
+                    Ok((
+                        ActionType::BasicCommand {
+                            command_id: 0x14000000,
+                        },
+                        2,
+                    ))
+                }
+            }
 
             // Unknown action types - try to find the next action boundary
             _ => Ok(Self::parse_unknown_action(action_type, subcommand, data)),
@@ -386,7 +717,13 @@ impl Iterator for ActionIterator<'_> {
 fn is_known_action_type(byte: u8) -> bool {
     matches!(
         byte,
-        0x00 | 0x0F | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x50 | 0x51 | 0x68
+        // Core action types
+        0x00 | 0x03 | 0x0C | 0x0F | 0x11 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E
+        // Reforged wrapped selections (0x16 + flags)
+        | 0x26 | 0x2E | 0x36 | 0x3E | 0x46 | 0x4E | 0x56 | 0x5E
+        // Reforged short-form markers
+        | 0x20 | 0x24 | 0x28 | 0x2C | 0x30 | 0x34 | 0x38 | 0x3C | 0x40 | 0x44 | 0x48 | 0x4C
+        | 0x50 | 0x51 | 0x52 | 0x54 | 0x58 | 0x5C | 0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x74 | 0x76 | 0x78 | 0x7C
     )
 }
 
@@ -500,6 +837,9 @@ impl ActionStatistics {
             ActionType::MinimapPing { .. } => {
                 // Pings are movement-like (map interaction)
                 self.movement_actions += 1;
+            }
+            ActionType::BattleNetSync { .. } => {
+                // BattleNet sync is meta/network action, no category
             }
             ActionType::Unknown { .. } => self.unknown_actions += 1,
         }
@@ -679,13 +1019,15 @@ mod tests {
     fn test_is_known_action_type() {
         assert!(is_known_action_type(0x00)); // Movement
         assert!(is_known_action_type(0x0F)); // InstantAbility
-        // Note: 0x10-0x14 are NOT in is_known_action_type because they
+        // Note: 0x10, 0x12-0x14 are NOT in is_known_action_type because they
         // can appear as data bytes, making boundary detection unreliable
+        // However, 0x11 IS known (Reforged wrapped ability with distinct 0x18/0x7B markers)
         assert!(!is_known_action_type(0x10)); // Not used for boundary detection
-        assert!(!is_known_action_type(0x11)); // Not used for boundary detection
+        assert!(is_known_action_type(0x11)); // Reforged wrapped ability
         assert!(!is_known_action_type(0x12)); // Not used for boundary detection
         assert!(!is_known_action_type(0x13)); // Not used for boundary detection
         assert!(!is_known_action_type(0x14)); // Not used for boundary detection
+        assert!(is_known_action_type(0x15)); // BattleNetSync
         assert!(is_known_action_type(0x16)); // Selection
         assert!(is_known_action_type(0x17)); // Hotkey
         assert!(is_known_action_type(0x18)); // ESC
@@ -693,7 +1035,9 @@ mod tests {
         assert!(is_known_action_type(0x1B)); // Item
         assert!(is_known_action_type(0x1C)); // BasicCommand
         assert!(is_known_action_type(0x1D)); // BuildTrain
-        assert!(!is_known_action_type(0x15)); // Unknown
+        // Reforged wrapped types
+        assert!(is_known_action_type(0x26)); // Wrapped selection
+        assert!(is_known_action_type(0x36)); // Wrapped selection
         assert!(!is_known_action_type(0xFF)); // Unknown
     }
 }

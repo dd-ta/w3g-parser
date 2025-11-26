@@ -80,4 +80,7 @@ pub use decompress::decompress;
 pub use error::{ParserError, Result};
 pub use format::{detect_format, ClassicVersion, ReplayFormat};
 pub use header::Header;
-pub use records::{GameRecord, GameRecordHeader, PlayerRoster, TimeFrame, TimeFrameIterator};
+pub use records::{
+    ChatMessage, GameRecord, GameRecordHeader, PlayerRoster, TimeFrame, TimeFrameIterator,
+    CHAT_MARKER,
+};

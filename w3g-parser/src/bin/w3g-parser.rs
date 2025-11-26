@@ -108,7 +108,11 @@ struct ParseOutput {
 
 #[derive(Serialize)]
 struct ChatInfo {
-    flags: u8,
+    /// Player slot ID (1-24) or None for system messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sender_slot: Option<u8>,
+    /// True if this is a system message (not from a player)
+    is_system: bool,
     message_id: u16,
     message: String,
 }
@@ -314,6 +318,20 @@ fn print_info(header: &Header, game_record: &GameRecord, file_size: usize) {
     }
 
     println!();
+
+    // Game metadata (if available)
+    let game_name = game_record.header.game_name();
+    let map_path = game_record.header.map_path_raw();
+    if !game_name.is_empty() || map_path.is_some() {
+        println!("Game:");
+        if !game_name.is_empty() {
+            println!("  Name: {}", game_name);
+        }
+        if let Some(map) = map_path {
+            println!("  Map (raw): {}", map);
+        }
+        println!();
+    }
 
     // Players
     println!("Players:");
@@ -570,6 +588,7 @@ fn collect_actions(
                     HotkeyOperation::Unknown(_) => ps.other += 1,
                 },
                 ActionType::EscapeKey | ActionType::ChangeAllyOptions { .. } => ps.esc += 1,
+                ActionType::BattleNetSync { .. } => ps.other += 1,
                 ActionType::Unknown { .. } => ps.other += 1,
             }
 
@@ -638,7 +657,8 @@ fn collect_chat_messages(decompressed: &[u8], start_offset: usize) -> Vec<ChatIn
                         && chat.message.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
                     {
                         messages.push(ChatInfo {
-                            flags: chat.flags,
+                            sender_slot: chat.sender_slot,
+                            is_system: chat.is_system_message(),
                             message_id: chat.message_id,
                             message: chat.message,
                         });
@@ -693,7 +713,13 @@ fn print_pretty(output: &ParseOutput) {
     if let Some(chat) = &output.chat {
         println!("=== Chat Messages ({}) ===", chat.len());
         for msg in chat {
-            println!("  [{}] {}", msg.message_id, msg.message);
+            if msg.is_system {
+                println!("  [SYSTEM] {}", msg.message);
+            } else if let Some(slot) = msg.sender_slot {
+                println!("  [Slot {}] {}", slot, msg.message);
+            } else {
+                println!("  {}", msg.message);
+            }
         }
         println!();
     }

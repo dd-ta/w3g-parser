@@ -150,6 +150,122 @@ impl GameRecordHeader {
     pub fn player_records_offset(&self) -> usize {
         self.byte_length
     }
+
+    /// Extracts the game name (lobby name) from encoded settings.
+    ///
+    /// The game name is stored as a null-terminated string starting at offset 1
+    /// when the first byte is 0x00 (Variant A). Returns empty string if no game
+    /// name is present or the format is not recognized.
+    #[must_use]
+    pub fn game_name(&self) -> String {
+        if self.encoded_settings.is_empty() {
+            return String::new();
+        }
+
+        // Variant A: First byte is 0x00, game name follows at offset 1
+        if self.encoded_settings[0] == 0x00 && self.encoded_settings.len() > 1 {
+            // Find null terminator
+            for i in 1..self.encoded_settings.len() {
+                if self.encoded_settings[i] == 0x00 {
+                    if i > 1 {
+                        return String::from_utf8_lossy(&self.encoded_settings[1..i]).to_string();
+                    }
+                    break;
+                }
+            }
+        }
+
+        String::new()
+    }
+
+    /// Extracts the map path from encoded settings.
+    ///
+    /// The map path is obfuscated by interleaving with non-ASCII bytes.
+    /// This method extracts all printable ASCII characters to recover the path.
+    /// The result may contain fragments of the actual path due to the encoding.
+    ///
+    /// Returns None if no map path can be extracted.
+    #[must_use]
+    pub fn map_path_raw(&self) -> Option<String> {
+        if self.encoded_settings.len() < 20 {
+            return None;
+        }
+
+        // Skip past game name and initial settings bytes
+        // Map path typically starts around offset 0x10-0x20
+        let start = self.find_map_path_start();
+
+        // Extract all printable ASCII bytes until we hit a long sequence of non-printable
+        let mut path_chars = Vec::new();
+        let mut non_printable_streak = 0;
+
+        for &byte in &self.encoded_settings[start..] {
+            if byte >= 0x20 && byte <= 0x7E {
+                path_chars.push(byte);
+                non_printable_streak = 0;
+            } else if byte == 0x00 {
+                // Null terminator - end of path
+                break;
+            } else {
+                non_printable_streak += 1;
+                // If we've seen many non-printable bytes, we've probably passed the path
+                if non_printable_streak > 10 && path_chars.len() > 10 {
+                    break;
+                }
+            }
+        }
+
+        if path_chars.len() >= 5 {
+            Some(String::from_utf8_lossy(&path_chars).to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Finds the likely start offset of the map path within encoded settings.
+    fn find_map_path_start(&self) -> usize {
+        // Look for common map path patterns:
+        // - "Maps" or "maps"
+        // - ".w3x" or ".w3m" file extensions
+        // - Backslash or forward slash path separators
+
+        for i in 0..self.encoded_settings.len().saturating_sub(4) {
+            let b = &self.encoded_settings[i..];
+
+            // Check for "Maps" (case insensitive)
+            if b.len() >= 4 {
+                let chunk = [b[0], b[1], b[2], b[3]];
+                if matches!(
+                    &chunk,
+                    b"Maps" | b"maps" | b"MAPS" | b"Maqs" | b"maqs"
+                ) {
+                    return i;
+                }
+            }
+
+            // Check for path separators with nearby ASCII
+            if (b[0] == b'/' || b[0] == b'\\')
+                && b.len() > 1
+                && b[1].is_ascii_alphanumeric()
+            {
+                // Go back a bit to include directory name
+                return i.saturating_sub(8);
+            }
+        }
+
+        // Default: skip past game name section (roughly offset 0x0C-0x15)
+        if self.encoded_settings[0] == 0x00 {
+            // Variant A: skip game name + settings bytes
+            for i in 1..self.encoded_settings.len().min(50) {
+                if self.encoded_settings[i] == 0x00 {
+                    return (i + 13).min(self.encoded_settings.len()); // Skip 13 settings bytes
+                }
+            }
+        }
+
+        // Variant B or fallback
+        12.min(self.encoded_settings.len())
+    }
 }
 
 /// Finds the boundary where encoded settings end and player records begin.

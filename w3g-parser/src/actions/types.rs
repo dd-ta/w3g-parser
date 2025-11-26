@@ -216,6 +216,16 @@ pub enum ActionType {
         unknown: u32,
     },
 
+    /// Battle.net sync action (0x15) - Reforged only.
+    /// This action appears frequently in Reforged replays and contains
+    /// what appears to be Base64-encoded synchronization data.
+    BattleNetSync {
+        /// Marker/subcommand byte.
+        marker: u16,
+        /// Base64-like encoded data payload.
+        data: Vec<u8>,
+    },
+
     /// Unknown action type - preserved for forward compatibility.
     Unknown {
         /// Raw action type byte.
@@ -252,6 +262,7 @@ impl ActionType {
             ActionType::ChangeAllyOptions { .. } => "ChangeAllyOptions",
             ActionType::TransferResources { .. } => "TransferResources",
             ActionType::MinimapPing { .. } => "MinimapPing",
+            ActionType::BattleNetSync { .. } => "BattleNetSync",
             ActionType::Unknown { .. } => "Unknown",
         }
     }
@@ -279,6 +290,7 @@ impl ActionType {
             ActionType::ChangeAllyOptions { .. } => 0x50,
             ActionType::TransferResources { .. } => 0x51,
             ActionType::MinimapPing { .. } => 0x68,
+            ActionType::BattleNetSync { .. } => 0x15,
             ActionType::Unknown { type_id, .. } => *type_id,
         }
     }
@@ -431,6 +443,9 @@ impl fmt::Display for ActionType {
             }
             ActionType::MinimapPing { x, y, .. } => {
                 write!(f, "MinimapPing: ({x:.1}, {y:.1})")
+            }
+            ActionType::BattleNetSync { marker, data } => {
+                write!(f, "BattleNetSync: marker 0x{:04X} ({} bytes)", marker, data.len())
             }
             ActionType::Unknown {
                 type_id,

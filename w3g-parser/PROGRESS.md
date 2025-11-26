@@ -72,10 +72,92 @@ Implemented comprehensive action type parsing improvements:
 
 All implementations validated with 159 unit tests passing.
 
+### Reforged Action Format (Reverse Engineered 2025-11-25)
+
+Implemented Reforged-specific action parsers through byte pattern analysis:
+
+1. **0x11 Wrapped Ability** - Reforged wraps abilities in a 5-byte header:
+   ```
+   0x11 0x00 0x18 [counter] 0x03 [inner_action...]
+   ```
+   The inner action is typically `0x1A 0x19` (direct ability) with FourCC and target.
+   Total: 19 bytes for wrapped direct ability.
+
+2. **0x03 Queue/Repeat Action** - 5-byte marker:
+   ```
+   0x03 0x00 0x18 [counter] 0x03
+   ```
+   Appears to signal action repetition or queue operations.
+
+3. **0x15 BattleNet Sync** - 24-byte sync payload with Base64-like data.
+
+**Impact**: Reduced total actions from 16713 to 12470 on test Reforged replay by properly parsing wrapped actions instead of fragmenting them.
+
+### Extended Reforged Format Support (2025-11-25)
+
+Implemented comprehensive Reforged action parser improvements achieving **<3% unknown** actions:
+
+1. **0x11 Classic Variant (0x7B marker)** - BattleNet sync packets with variable length:
+   ```
+   0x11 0x00 0x7B [variable payload 4-18 bytes]
+   ```
+   Different from Reforged's 0x18 marker, appears in Classic format replays.
+
+2. **Wrapped Selection Types (0x26, 0x36, 0x46, 0x56, 0x2E, 0x3E, 0x4E, 0x5E)**:
+   ```
+   [type] 0x00 0x16 [selection_data...]
+   ```
+   Base Selection (0x16) with modifier flags in upper nibble.
+
+3. **Short-Form Markers (0x20-0x7F range)**:
+   - Pattern: `[type] 0x00` (2 bytes) - sync/state markers
+   - Some contain embedded selection: `[type] 0x00 0x16 [count] [mode] [flags] [unit_ids]`
+
+4. **High-Range Types (0x80-0xFF)**:
+   - 0xA0 with subcommand 0x02 - Reforged state sync marker
+
+5. **Classic Wrapped Ability (0x03 0x1A)**:
+   ```
+   0x03 0x1A 0x19 [fourcc 4] [target 4] = 12 bytes
+   ```
+
+6. **Embedded Ability (0x0E 0x00 0x1A 0x19)**:
+   Attack-move with embedded direct ability, 14 bytes total.
+
+7. **Boundary Detection Fix**: Removed 0x01 from `is_known_action_type()` to prevent
+   action fragmentation when unit ID data contains `[1-15][0x01]` patterns.
+
+**Results**:
+- Reforged (GRBN): 185/6482 = **2.9% unknown**
+- Classic (10034): 334/7589 = **4.4% unknown**
+
+### Chat Message Enhancements (2025-11-25)
+
+1. **ChatMessage exported in public API** - Now available via `w3g_parser::ChatMessage`
+2. **Player slot ID extraction** - `sender_slot: Option<u8>` field identifies sender:
+   - `Some(1-24)` = Player slot ID
+   - `None` = System message (flags = 0x03)
+3. **Helper method** - `is_system_message()` for easy categorization
+
+### Game Metadata Decoding (2025-11-25)
+
+Added methods to `GameRecordHeader`:
+
+1. **`game_name()`** - Extracts lobby name from encoded settings
+   - Variant A: First byte 0x00, name at offset 1 (null-terminated)
+   - Returns empty string for Variant B (no game name)
+
+2. **`map_path_raw()`** - Extracts obfuscated map path
+   - Map path is interleaved with non-ASCII bytes
+   - Returns printable ASCII fragments (e.g., "oMaqs/W3Cmiamqioos]w3c_s13...")
+   - Recognizable patterns: "Maps", directory separators, file extensions
+
 ## Next Steps (Optional Enhancements)
 
-- [ ] Expose chat messages in library API (currently CLI-only)
-- [ ] Add sender player ID to chat messages
-- [x] ~~Improve action type identification (reduce "Unknown" actions)~~ - Completed
-- [ ] Add game metadata decoding (map name, game name from encoded settings)
+- [x] ~~Expose chat messages in library API~~ - Completed
+- [x] ~~Add sender player ID to chat messages~~ - Completed (sender_slot field)
+- [x] ~~Improve action type identification~~ - Completed (<5% unknown)
+- [x] ~~Add game metadata decoding~~ - Completed (game_name, map_path_raw)
 - [ ] Further research on 0x10-0x14 action types for proper validation
+- [x] ~~Further Reforged format research~~ - Completed
+- [ ] Proper map path deobfuscation (current extraction is raw/partial)

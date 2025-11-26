@@ -151,6 +151,15 @@ impl AbilityAction {
     /// Fixed size of a direct ability action (after player ID byte).
     pub const SIZE: usize = 14;
 
+    /// Creates an `AbilityAction` from raw bytes (used by Reforged wrapper parsers).
+    #[must_use]
+    pub fn from_raw(ability_code: [u8; 4], target_unit: Option<u32>) -> Self {
+        Self {
+            ability_code: AbilityCode::from_raw(ability_code),
+            target_unit,
+        }
+    }
+
     /// Parses a direct ability action from raw data.
     ///
     /// # Arguments

@@ -162,12 +162,23 @@ impl ChecksumRecord {
 /// A chat message record.
 ///
 /// Chat messages (0x20 marker) contain in-game messages from players.
+///
+/// # Player Identification
+///
+/// The `sender_slot` field contains the player slot ID (1-24) for player messages,
+/// or `None` for system messages (flags = 0x03).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
-    /// Flags byte.
+    /// Player slot ID (1-24) for player messages, None for system messages.
+    ///
+    /// System messages (player leave notifications, etc.) have flags = 0x03.
+    /// Player messages have flags = player_slot_id (1-24).
+    pub sender_slot: Option<u8>,
+
+    /// Raw flags byte (equals sender_slot for player messages, 0x03 for system).
     pub flags: u8,
 
-    /// Message ID or type.
+    /// Message ID (often correlates with message length).
     pub message_id: u16,
 
     /// The message content.
@@ -175,6 +186,13 @@ pub struct ChatMessage {
 
     /// Total bytes consumed by this record.
     pub byte_length: usize,
+}
+
+impl ChatMessage {
+    /// Returns true if this is a system message (not from a player).
+    pub fn is_system_message(&self) -> bool {
+        self.flags == 0x03
+    }
 }
 
 impl ChatMessage {
@@ -211,11 +229,24 @@ impl ChatMessage {
 
         // Chat message format (reverse engineered from replay data):
         // - Offset 0: 0x20 (marker)
-        // - Offset 1: flags (0x03 for system, 0x07 for player)
+        // - Offset 1: flags/sender_slot (0x03 for system, 1-24 for player slot ID)
         // - Offset 2-3: message_id (u16 little-endian)
-        // - Offset 4-8: padding (0x20 XX 0x00 0x00 0x00)
+        // - Offset 4-8: padding (0x20 0x00 0x00 0x00 0x00)
         // - Offset 9+: null-terminated message
         //
+        // The flags byte serves dual purpose:
+        // - 0x03: System message (game events, player leave notifications)
+        // - 1-24: Player slot ID for player chat messages
+
+        // Determine sender_slot from flags
+        let sender_slot = if flags == 0x03 {
+            None // System message
+        } else if flags >= 1 && flags <= 24 {
+            Some(flags) // Player slot ID
+        } else {
+            None // Unknown flags value, treat as system
+        };
+
         // The message always starts at offset 9 (after the 5-byte padding block)
         let msg_start = 9;
 
@@ -239,6 +270,7 @@ impl ChatMessage {
         };
 
         Ok(ChatMessage {
+            sender_slot,
             flags,
             message_id,
             message,
